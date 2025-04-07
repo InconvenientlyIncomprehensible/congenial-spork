@@ -12,7 +12,7 @@ SUBREDDITS = [
 ]
 
 CHECK_INTERVAL = 1  # seconds between new-post checks
-DELETION_CHECK_INTERVAL = 60  # now every 1 minute
+DELETION_CHECK_INTERVAL = 60  # check for deletions every 1 minute
 tracked_posts = {}
 tracked_posts_lock = threading.Lock()
 
@@ -40,7 +40,7 @@ def fetch_new_posts(subreddit):
                 continue
 
             post_id = post.get("data-fullname")
-            if not post_id:
+            if not post_id or post_id in tracked_posts:
                 continue
 
             time_tag = post.find("time")
@@ -56,8 +56,14 @@ def fetch_new_posts(subreddit):
             title = title_tag.text.strip()
             link = "https://reddit.com" + post.get("data-permalink")
 
-            content_div = post.find("div", class_="usertext-body")
-            content = content_div.get_text(strip=True) if content_div else ""
+            # ✅ Fetch full post body from permalink page
+            try:
+                post_resp = requests.get(link, headers=HEADERS, timeout=10)
+                post_soup = BeautifulSoup(post_resp.text, "html.parser")
+                full_body = post_soup.find("div", class_="usertext-body")
+                content = full_body.get_text(strip=True) if full_body else ""
+            except:
+                content = ""
 
             post_data = {
                 "post_id": post_id,
@@ -83,8 +89,7 @@ def new_posts_loop():
             if posts:
                 with tracked_posts_lock:
                     for post in posts:
-                        if post["post_id"] not in tracked_posts:
-                            tracked_posts[post["post_id"]] = post
+                        tracked_posts[post["post_id"]] = post
         time.sleep(CHECK_INTERVAL + random.uniform(0, 0.5))
 
 
@@ -92,15 +97,16 @@ def is_post_deleted(post):
     try:
         r = requests.get(post["link"], headers=HEADERS, timeout=10)
         if r.status_code != 200:
-            return True  # 404, 403, etc.
+            return True
+
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # If there's no title or it's obviously deleted/removed
+        # Check title
         title_tag = soup.find("a", class_="title")
         if not title_tag or title_tag.text.strip().lower() in ["[deleted]", "[removed]"]:
             return True
 
-        # Look for deleted/removed in body too
+        # Check post body
         body = soup.find("div", class_="usertext-body")
         if body:
             text = body.get_text(strip=True).lower()
